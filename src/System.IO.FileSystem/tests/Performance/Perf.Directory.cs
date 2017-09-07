@@ -2,13 +2,16 @@
 // The .NET Foundation licenses this file to you under the MIT license.
 // See the LICENSE file in the project root for more information.
 
+using System.Collections.Generic;
+using System.Text;
 using Microsoft.Xunit.Performance;
+using Xunit;
 
 namespace System.IO.Tests
 {
     public class Perf_Directory : FileSystemTest
     {
-        [Benchmark]
+        //[Benchmark]
         public void GetCurrentDirectory()
         {
             foreach (var iteration in Benchmark.Iterations)
@@ -21,22 +24,56 @@ namespace System.IO.Tests
                     }
         }
 
-        [Benchmark]
-        public void CreateDirectory()
+        [Benchmark(InnerIterationCount = 5)]
+        [InlineData(10)]
+        [InlineData(100)]
+        [InlineData(1000)]
+        public void CreateDirectory(int levels)
         {
             foreach (var iteration in Benchmark.Iterations)
             {
                 // Setup
-                string testFile = GetTestFilePath();
+                string testSubdirectory = GetTestSubdirectory(levels);
 
                 // Actual perf testing
                 using (iteration.StartMeasurement())
-                    for (int i = 0; i < 20000; i++)
-                        Directory.CreateDirectory(testFile + i);
+                    for (int i = 0; i < Benchmark.InnerIterationCount; i++)
+                        Directory.CreateDirectory(Path.Combine(GetTestFilePath(), testSubdirectory));
             }
         }
 
-        [Benchmark]
+        [Benchmark(InnerIterationCount = 5)]
+        [InlineData(10)]
+        [InlineData(100)]
+        [InlineData(1000)]
+        public void DeleteDirectory(int levels)
+        {
+            foreach (var iteration in Benchmark.Iterations)
+            {
+                // Setup
+                string testSubdirectory = GetTestSubdirectory(levels);
+
+                HashSet<string> roots = new HashSet<string>();
+
+                for (int i = 0; i < Benchmark.InnerIterationCount; i++)
+                {
+                    string root = GetTestFilePath();
+                    roots.Add(root);
+                    Directory.CreateDirectory(Path.Combine(root, testSubdirectory));
+                }
+
+                // Actual perf testing
+                using (iteration.StartMeasurement())
+                {
+                    foreach (string root in roots)
+                    {
+                        Directory.Delete(root, recursive: true);
+                    }
+                }
+            }
+        }
+
+        //[Benchmark]
         public void Exists()
         {
             // Setup
@@ -55,5 +92,20 @@ namespace System.IO.Tests
             // Teardown
             Directory.Delete(testFile);
         }
+
+        private string GetTestSubdirectory(int levelsDeep)
+        {
+            StringBuilder sb = new StringBuilder(levelsDeep * 2 + 200);
+
+            sb.Append("a");
+            for (int i = 0; i < levelsDeep - 1; i++)
+            {
+                sb.Append(Path.DirectorySeparatorChar + "a");
+            }
+
+            return sb.ToString();
+        }
+
+
     }
 }
