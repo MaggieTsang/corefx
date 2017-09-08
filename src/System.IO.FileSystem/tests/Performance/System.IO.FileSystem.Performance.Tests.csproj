@@ -21,7 +21,6 @@
     <Compile Include="..\PortedCommon\IOInputs.cs" />
     <Compile Include="..\PortedCommon\IOServices.cs" />
     <Compile Include="Perf.Directory.cs" />
-    <Compile Include="Perf.FileInfo.cs" />
     <Compile Include="$(CommonTestPath)\System\PerfUtils.cs">
       <Link>Common\System\PerfUtils.cs</Link>
     </Compile>

@@ -6,6 +6,7 @@ using Microsoft.Win32.SafeHandles;
 using System.Collections.Generic;
 using System.Runtime.InteropServices;
 using System.Text;
+using System.Buffers;
 
 namespace System.IO
 {
@@ -423,16 +424,27 @@ namespace System.IO
             // Do not recursively delete through reparse points.
             if (!recursive || IsReparsePoint(fullPath))
             {
-                RemoveDirectoryInternal(fullPath, topLevel: true);
+                RemoveDirectoryInternal(fullPath, topLevel: true, throwNotEmpty: true);
                 return;
             }
 
-            // We want extended syntax so we can delete "extended" subdirectories and files
-            // (most notably ones with trailing whitespace or periods)
-            fullPath = PathInternal.EnsureExtendedPrefix(fullPath);
+            char[] buffer = ArrayPool<char>.Shared.Rent(1024);
 
-            Interop.Kernel32.WIN32_FIND_DATA findData = new Interop.Kernel32.WIN32_FIND_DATA();
-            RemoveDirectoryRecursive(fullPath, ref findData, topLevel: true);
+            try
+            {
+                // We want extended syntax so we can delete "extended" subdirectories and files
+                // (most notably ones with trailing whitespace or periods)
+                fullPath = PathHelpers.TrimEndingDirectorySeparator(PathInternal.EnsureExtendedPrefix(fullPath));
+
+                fullPath.CopyTo(0, buffer, 0, fullPath.Length);
+
+                Interop.Kernel32.WIN32_FIND_DATA findData = new Interop.Kernel32.WIN32_FIND_DATA();
+                RemoveDirectoryRecursive(ref findData, buffer, fullPath.Length, topLevel: true);
+            }
+            finally
+            {
+                ArrayPool<char>.Shared.Return(buffer);
+            }
         }
 
         private static bool IsReparsePoint(string fullPath)
@@ -450,30 +462,52 @@ namespace System.IO
             return (((FileAttributes)data.fileAttributes & FileAttributes.ReparsePoint) != 0);
         }
 
-        private static void RemoveDirectoryRecursive(string fullPath, ref Interop.Kernel32.WIN32_FIND_DATA findData, bool topLevel)
+        private static int AddFileName(char[] buffer, int position, ref Interop.Kernel32.WIN32_FIND_DATA findData)
+        {
+            int charCount = 0;
+            for (; charCount < findData.cFileName.Length; charCount++)
+            {
+                char c = findData.cFileName[charCount];
+                buffer[position + charCount] = c;
+                if (c == '\0')
+                {
+                    break;
+                }
+            }
+
+            return charCount;
+        }
+
+        private static void RemoveDirectoryRecursive(ref Interop.Kernel32.WIN32_FIND_DATA findData, char[] buffer, int pathLength, bool topLevel)
         {
             int errorCode;
             Exception exception = null;
+            buffer[pathLength] = Path.DirectorySeparatorChar;
+            buffer[pathLength + 1] = '*';
+            buffer[pathLength + 2] = '\0';
 
-            using (SafeFindHandle handle = Interop.Kernel32.FindFirstFile(Directory.EnsureTrailingDirectorySeparator(fullPath) + "*", ref findData))
+            using (SafeFindHandle handle = Interop.Kernel32.FindFirstFileChar(buffer, ref findData))
             {
                 if (handle.IsInvalid)
-                    throw Win32Marshal.GetExceptionForLastWin32Error(fullPath);
+                    throw Win32Marshal.GetExceptionForLastWin32Error("Invalid handle");
 
                 do
                 {
                     if ((findData.dwFileAttributes & Interop.Kernel32.FileAttributes.FILE_ATTRIBUTE_DIRECTORY) == 0)
                     {
                         // File
-                        string fileName = findData.cFileName.GetStringFromFixedBuffer();
-                        if (!Interop.Kernel32.DeleteFile(Path.Combine(fullPath, fileName)) && exception == null)
+                        AddFileName(buffer, pathLength + 1, ref findData);
+                        if (!Interop.Kernel32.DeleteFileChar(buffer) && exception == null)
                         {
                             errorCode = Marshal.GetLastWin32Error();
 
                             // We don't care if something else deleted the file first
-                            if (errorCode != Interop.Errors.ERROR_FILE_NOT_FOUND)
+                            switch (errorCode)
                             {
-                                exception = Win32Marshal.GetExceptionForWin32Error(errorCode, fileName);
+                                case Interop.Errors.ERROR_FILE_NOT_FOUND:
+                                    break;
+                                default:
+                                    exception = Win32Marshal.GetExceptionForWin32Error(errorCode, "Could not delete file");
                             }
                         }
                     }
@@ -483,15 +517,16 @@ namespace System.IO
                         if (findData.cFileName.FixedBufferEqualsString(".") || findData.cFileName.FixedBufferEqualsString(".."))
                             continue;
 
-                        string fileName = findData.cFileName.GetStringFromFixedBuffer();
+                        int nameLength = AddFileName(buffer, pathLength + 1, ref findData);
                         if ((findData.dwFileAttributes & (int)FileAttributes.ReparsePoint) == 0)
                         {
                             // Not a reparse point, recurse.
                             try
                             {
                                 RemoveDirectoryRecursive(
-                                    Path.Combine(fullPath, fileName),
                                     findData: ref findData,
+                                    buffer: buffer,
+                                    pathLength: pathLength + nameLength + 1,
                                     topLevel: false);
                             }
                             catch (Exception e)
@@ -507,25 +542,31 @@ namespace System.IO
                             {
                                 // Mount point. Unmount using full path plus a trailing '\'.
                                 // (Note: This doesn't remove the underlying directory)
-                                string mountPoint = Path.Combine(fullPath, fileName + PathHelpers.DirectorySeparatorCharAsString);
-                                if (!Interop.Kernel32.DeleteVolumeMountPoint(mountPoint) && exception == null)
-                                {
-                                    errorCode = Marshal.GetLastWin32Error();
-                                    if (errorCode != Interop.Errors.ERROR_SUCCESS && 
-                                        errorCode != Interop.Errors.ERROR_PATH_NOT_FOUND)
-                                    {
-                                        exception = Win32Marshal.GetExceptionForWin32Error(errorCode, fileName);
-                                    }
-                                }
+                                //string mountPoint = Path.Combine(fullPath, fileName + PathHelpers.DirectorySeparatorCharAsString);
+                                //if (!Interop.Kernel32.DeleteVolumeMountPoint(mountPoint) && exception == null)
+                                //{
+                                //    errorCode = Marshal.GetLastWin32Error();
+                                //    if (errorCode != Interop.Errors.ERROR_SUCCESS && 
+                                //        errorCode != Interop.Errors.ERROR_PATH_NOT_FOUND)
+                                //    {
+                                //        exception = Win32Marshal.GetExceptionForWin32Error(errorCode, fileName);
+                                //    }
+                                //}
                             }
 
+                            buffer[pathLength] = '\0';
                             // Note that RemoveDirectory on a symbolic link will remove the link itself.
-                            if (!Interop.Kernel32.RemoveDirectory(Path.Combine(fullPath, fileName)) && exception == null)
+                            if (!Interop.Kernel32.RemoveDirectoryChar(buffer) && exception == null)
                             {
                                 errorCode = Marshal.GetLastWin32Error();
-                                if (errorCode != Interop.Errors.ERROR_PATH_NOT_FOUND)
+                                switch (errorCode)
                                 {
-                                    exception = Win32Marshal.GetExceptionForWin32Error(errorCode, fileName);
+                                    case Interop.Errors.ERROR_PATH_NOT_FOUND:
+                                    case Interop.Errors.ERROR_DIR_NOT_EMPTY:
+                                        break;
+                                    default:
+                                        exception = Win32Marshal.GetExceptionForWin32Error(errorCode, "TODO");
+                                        break;
                                 }
                             }
                         }
@@ -537,13 +578,38 @@ namespace System.IO
 
                 errorCode = Marshal.GetLastWin32Error();
                 if (errorCode != Interop.Errors.ERROR_SUCCESS && errorCode != Interop.Errors.ERROR_NO_MORE_FILES)
-                    throw Win32Marshal.GetExceptionForWin32Error(errorCode, fullPath);
+                    throw Win32Marshal.GetExceptionForWin32Error(errorCode, "TODO");
             }
 
-            RemoveDirectoryInternal(fullPath, topLevel: topLevel);
+            buffer[pathLength] = '\0';
+            if (!Interop.Kernel32.RemoveDirectoryChar(buffer))
+            {
+                errorCode = Marshal.GetLastWin32Error();
+                switch (errorCode)
+                {
+                    case Interop.Errors.ERROR_FILE_NOT_FOUND:
+                        // File not found doesn't make much sense coming from a directory delete.
+                        errorCode = Interop.Errors.ERROR_PATH_NOT_FOUND;
+                        goto case Interop.Errors.ERROR_PATH_NOT_FOUND;
+                    case Interop.Errors.ERROR_DIR_NOT_EMPTY:
+                        break;
+                    case Interop.Errors.ERROR_PATH_NOT_FOUND:
+                        // We only throw for the top level directory not found, not for any contents.
+                        if (topLevel)
+                            goto default;
+                        break;
+                    case Interop.Errors.ERROR_ACCESS_DENIED:
+                        // This conversion was originally put in for Win9x. Keeping for compatibility.
+                        throw new IOException(SR.Format(SR.UnauthorizedAccess_IODenied_Path, "TODO"));
+                    default:
+                        throw Win32Marshal.GetExceptionForWin32Error(errorCode, "TODO");
+                }
+
+
+            }
         }
 
-        private static void RemoveDirectoryInternal(string fullPath, bool topLevel)
+        private static void RemoveDirectoryInternal(string fullPath, bool topLevel, bool throwNotEmpty = false)
         {
             if (!Interop.Kernel32.RemoveDirectory(fullPath))
             {
@@ -554,6 +620,10 @@ namespace System.IO
                         // File not found doesn't make much sense coming from a directory delete.
                         errorCode = Interop.Errors.ERROR_PATH_NOT_FOUND;
                         goto case Interop.Errors.ERROR_PATH_NOT_FOUND;
+                    case Interop.Errors.ERROR_DIR_NOT_EMPTY:
+                        if (!throwNotEmpty)
+                            return;
+                        break;  
                     case Interop.Errors.ERROR_PATH_NOT_FOUND:
                         // We only throw for the top level directory not found, not for any contents.
                         if (!topLevel)

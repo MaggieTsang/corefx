@@ -21,5 +21,16 @@ internal partial class Interop
             path = PathInternal.EnsureExtendedPrefixOverMaxPath(path);
             return RemoveDirectoryPrivate(path);
         }
+
+        /// <summary>
+        /// WARNING: This method does not implicitly handle long paths. Use RemoveDirectory.
+        /// </summary>
+        [DllImport(Libraries.Kernel32, EntryPoint = "RemoveDirectoryW", SetLastError = true, CharSet = CharSet.Unicode, BestFitMapping = false)]
+        private static extern bool RemoveDirectoryPrivateChar(char[] path);
+
+        internal static bool RemoveDirectoryChar(char[] path)
+        {
+            return RemoveDirectoryPrivateChar(path);
+        }
     }
 }

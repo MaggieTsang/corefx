@@ -21,5 +21,16 @@ internal partial class Interop
             path = PathInternal.EnsureExtendedPrefixOverMaxPath(path);
             return DeleteFilePrivate(path);
         }
+
+        /// <summary>
+        /// WARNING: This method does not implicitly handle long paths. Use DeleteFile.
+        /// </summary>
+        [DllImport(Libraries.Kernel32, EntryPoint = "DeleteFileW", SetLastError = true, CharSet = CharSet.Unicode, BestFitMapping = false)]
+        private static extern bool DeleteFilePrivateChar(char[] path);
+
+        internal static bool DeleteFileChar(char[] path)
+        {
+            return DeleteFilePrivateChar(path);
+        }
     }
 }

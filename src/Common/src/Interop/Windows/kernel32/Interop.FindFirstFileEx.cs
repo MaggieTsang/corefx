@@ -24,5 +24,18 @@ internal partial class Interop
             // use FindExInfoBasic since we don't care about short name and it has better perf
             return FindFirstFileExPrivate(fileName, FINDEX_INFO_LEVELS.FindExInfoBasic, ref data, FINDEX_SEARCH_OPS.FindExSearchNameMatch, IntPtr.Zero, 0);
         }
+
+
+        /// <summary>
+        /// WARNING: This method does not implicitly handle long paths. Use FindFirstFile.
+        /// </summary>
+        [DllImport(Libraries.Kernel32, EntryPoint = "FindFirstFileExW", SetLastError = true, CharSet = CharSet.Unicode, BestFitMapping = false)]
+        private static extern SafeFindHandle FindFirstFileExChar(char[] lpFileName, FINDEX_INFO_LEVELS fInfoLevelId, ref WIN32_FIND_DATA lpFindFileData, FINDEX_SEARCH_OPS fSearchOp, IntPtr lpSearchFilter, int dwAdditionalFlags);
+
+        internal static SafeFindHandle FindFirstFileChar(char[] fileName, ref WIN32_FIND_DATA data)
+        {
+            // use FindExInfoBasic since we don't care about short name and it has better perf
+            return FindFirstFileExChar(fileName, FINDEX_INFO_LEVELS.FindExInfoBasic, ref data, FINDEX_SEARCH_OPS.FindExSearchNameMatch, IntPtr.Zero, 0);
+        }
     }
 }

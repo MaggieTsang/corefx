@@ -24,7 +24,7 @@ namespace System.IO.Tests
                     }
         }
 
-        [Benchmark(InnerIterationCount = 5)]
+        // [Benchmark(InnerIterationCount = 5)]
         [InlineData(10)]
         [InlineData(100)]
         [InlineData(1000)]
@@ -42,7 +42,7 @@ namespace System.IO.Tests
             }
         }
 
-        [Benchmark(InnerIterationCount = 5)]
+        // [Benchmark(InnerIterationCount = 2)]
         [InlineData(10)]
         [InlineData(100)]
         [InlineData(1000)]
@@ -60,6 +60,42 @@ namespace System.IO.Tests
                     string root = GetTestFilePath();
                     roots.Add(root);
                     Directory.CreateDirectory(Path.Combine(root, testSubdirectory));
+                }
+
+                // Actual perf testing
+                using (iteration.StartMeasurement())
+                {
+                    foreach (string root in roots)
+                    {
+                        Directory.Delete(root, recursive: true);
+                    }
+                }
+            }
+        }
+
+        [Benchmark(InnerIterationCount = 2)]
+        [InlineData(100)]
+        public void DeleteDirectoryWithContent(int levels)
+        {
+            foreach (var iteration in Benchmark.Iterations)
+            {
+                // Setup
+                HashSet<string> roots = new HashSet<string>();
+
+                for (int i = 0; i < Benchmark.InnerIterationCount; i++)
+                {
+                    string root = GetTestFilePath();
+                    roots.Add(root);
+
+                    for (int j = 0; j < levels; j++)
+                    {
+                        root = Path.Combine(root, "a");
+                        Directory.CreateDirectory(root);
+                        for (char c = 'b'; c <= 'z'; c++)
+                        {
+                            File.Create(Path.Combine(root, c.ToString()));
+                        }
+                    }
                 }
 
                 // Actual perf testing
